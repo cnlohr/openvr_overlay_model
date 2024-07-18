@@ -22,6 +22,7 @@
 #define WIDTH  1024
 #define HEIGHT 512
 float overlayscale = 0.25; // In meters.
+float scale = 0.3;         // teapot scale
 
 // OpenVR Doesn't define these for some reason (I don't remmeber why) so we define the functions here. They are copy-pasted from the bottom of openvr_capi.h
 intptr_t VR_InitInternal( EVRInitError *peError, EVRApplicationType eType );
@@ -494,7 +495,6 @@ int main()
 					float output_pt1[4];
 					float applied_pt2[4];
 					float output_pt2[4];
-					float scale = 0.5;
 					float enpt = 1;
 					
 					float ptloc1[3];
