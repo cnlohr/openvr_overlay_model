@@ -18,6 +18,11 @@
 #include "openvr_capi.h"
 
 
+// The width/height of the overlay.
+#define WIDTH  1024
+#define HEIGHT 512
+float overlayscale = 0.25; // In meters.
+
 // OpenVR Doesn't define these for some reason (I don't remmeber why) so we define the functions here. They are copy-pasted from the bottom of openvr_capi.h
 intptr_t VR_InitInternal( EVRInitError *peError, EVRApplicationType eType );
 void VR_ShutdownInternal();
@@ -54,10 +59,6 @@ struct VR_IVROverlay_FnTable * oOverlay;
 
 // The OpenVR Overlay handle.
 VROverlayHandle_t overlayID;
-
-// The width/height of the overlay.
-#define WIDTH  1536
-#define HEIGHT 768
 
 HmdMatrix34_t InvertHmdMatrix34( HmdMatrix34_t mtoinv )
 {
@@ -185,7 +186,19 @@ void normalize3d(float *out, const float *in) {
 	out[2] = in[2] * r;
 }
 
+double OGGetAbsoluteTime()
+{
+	static LARGE_INTEGER lpf;
+	LARGE_INTEGER li;
 
+	if( !lpf.QuadPart )
+	{
+		QueryPerformanceFrequency( &lpf );
+	}
+
+	QueryPerformanceCounter( &li );
+	return (double)li.QuadPart / (double)lpf.QuadPart;
+}
 
 int main()
 {
@@ -212,11 +225,9 @@ int main()
 		oOverlay = CNOVRGetOpenVRFunctionTable( IVROverlay_Version );
 	}
 
-	float overlayscale = 0.4;
-
 	{
 		// Generate the overlay.
-		oOverlay->CreateOverlay( "batterymonitoroverlay-overlay", "Battery Monitor Overlay", &overlayID );
+		oOverlay->CreateOverlay( "model-overlay", "Model Overlay", &overlayID );
 		oOverlay->SetOverlayWidthInMeters( overlayID, overlayscale );
 		oOverlay->SetOverlayColor( overlayID, 1., .8, .7 );
 
@@ -330,9 +341,11 @@ int main()
 		}
 #endif
 
+
 		int overlayAssociated = false;
 		TrackedDeviceIndex_t index;
 		index = oSystem->GetTrackedDeviceIndexForControllerRole( ETrackedControllerRole_TrackedControllerRole_LeftHand );
+
 		if( index == k_unTrackedDeviceIndexInvalid || index == k_unTrackedDeviceIndex_Hmd )
 		{
 			printf( "Couldn't find your controller to attach our overlay to (%d)\n", index );
@@ -349,8 +362,17 @@ int main()
 				oSystem->GetEyeToHeadTransform( EVREye_Eye_Right )
 			};
 
+			// Get correct time offset for poses.
+			float last_vsync_time;
+			oSystem->GetTimeSinceLastVsync( &last_vsync_time, 0 );
+			const float display_frequency = oSystem->GetFloatTrackedDeviceProperty( k_unTrackedDeviceIndex_Hmd, ETrackedDeviceProperty_Prop_DisplayFrequency_Float, 0 );
+			const float frame_period = 1.f / display_frequency;
+			const float vsync_to_photons = oSystem->GetFloatTrackedDeviceProperty( k_unTrackedDeviceIndex_Hmd, ETrackedDeviceProperty_Prop_SecondsFromVsyncToPhotons_Float, 0 );
+			const float predicted_time = frame_period * 3 - last_vsync_time + vsync_to_photons;
+
+			// Get all tracked devices for when we think our frame is likely to land.
 			TrackedDevicePose_t poses[64];
-			oSystem->GetDeviceToAbsoluteTrackingPose( ETrackingUniverseOrigin_TrackingUniverseRawAndUncalibrated, .011111, poses, 64 );
+			oSystem->GetDeviceToAbsoluteTrackingPose( ETrackingUniverseOrigin_TrackingUniverseRawAndUncalibrated, predicted_time, poses, 64 );
 			struct HmdMatrix34_t ctrl = poses[index].mDeviceToAbsoluteTracking;
 			struct HmdMatrix34_t head = poses[0].mDeviceToAbsoluteTracking;
 			float put_thing_at[3] =  { ctrl.m[0][3], ctrl.m[1][3], ctrl.m[2][3] };
@@ -359,6 +381,8 @@ int main()
 			float object_to_head_full_mag[3];
 			sub3d( object_to_head_full_mag, head_location, put_thing_at );
 			normalize3d( object_to_head, object_to_head_full_mag );
+
+//			printf( "%f %f %f\n", put_thing_at[0], put_thing_at[1], put_thing_at[2] );
 
 			// Point square at head - Make HMD up real up, to keep eyes parallel in view space.
 			float up[3] = { 0, 1, 0 };
@@ -387,10 +411,11 @@ int main()
 			
 			//This now has a plane pointing at the center of your eyes.
 #if 0
-			printf( "%f %f %f / %f %f %f / %f %f %f\n",
+			printf( "%f %f %f / %f %f %f / %f %f %f / %f %f %f\n",
 				object_vector_right[0], object_vector_right[1], object_vector_right[2],
 				object_vector_up[0], object_vector_up[1], object_vector_up[2],
-				object_to_head[0], object_to_head[1], object_to_head[2] );
+				object_to_head[0], object_to_head[1], object_to_head[2],
+				ctrl.m[0][3], ctrl.m[1][3], ctrl.m[2][3] );
 #endif
 
 			int eye;
@@ -404,7 +429,6 @@ int main()
 				sub3d( object_to_head_full_mag, eye_location, put_thing_at );
 				normalize3d( object_to_head, object_to_head_full_mag );
 
-
 				float fovyK = mag3d( object_to_head_full_mag ) / overlayscale;
 				//1./tan(fovy * 3.1415926 / 360.0)
 				float aspect = 1;
@@ -412,10 +436,8 @@ int main()
 				float zFar = 200;
 				float perspective[16];
 				matrix44perspective( perspective, fovyK, aspect, zNear, zFar );
-				
 
-
-								// Point square at head - Make HMD up real up, to keep eyes parallel in view space.
+				// Point square at head - Make HMD up real up, to keep eyes parallel in view space.
 				float up[3] = { 0, 1, 0 };
 				ApplyMatrixToPointRotateOnly( up, up, head );
 				float object_vector_up[3];
@@ -460,7 +482,8 @@ int main()
 				
 				
 				int i;
-				for( i = 0; i < sizeof( teapotIndices ) / sizeof( unsigned int); i++ )
+				// Skip over a bunch of vertices.
+				for( i = 0; i < sizeof( teapotIndices ) / sizeof( unsigned int); i+=3 )
 				{
 					int i1 = teapotIndices[((i+0)%3)+(i/3)*3];
 					int i2 = teapotIndices[((i+1)%3)+(i/3)*3];
@@ -481,8 +504,6 @@ int main()
 					float ptloc2[3];
 					float ptlocal2[3] = { pt2[0]*scale, pt2[1]*scale, pt2[2]*scale };
 					ApplyMatrixToPoint( ptloc2, ptlocal2, ctrl );
-
-
 
 					ApplyMatrixToPoint( applied_pt1, ptloc1, modelview );
 					ApplyMatrixToPoint( applied_pt2, ptloc2, modelview );
@@ -548,16 +569,16 @@ int main()
 		struct VREvent_t nEvent;
 		if( overlayAssociated )
 		{
-			oOverlay->PollNextOverlayEvent( overlayID, &nEvent, 0xffffff );
+			while( oOverlay->PollNextOverlayEvent( overlayID, &nEvent, sizeof( nEvent ) ) );
 		}
 
-		// Display the image and wait for time to display next frame.
-		CNFGSwapBuffers();
+		// Do not flip frames, otherwise we will lock to 2D FPS.
+		//CNFGSwapBuffers();
 
 		framenumber++;
 		
-		// Don't go at 1,000+ FPS.
-		//Sleep( 5 );
+		// Don't go at 1,000+ FPS, wait til next frame sync from scene app.
+		oOverlay->WaitFrameSync( 100 );
 	}
 
 	return 0;
